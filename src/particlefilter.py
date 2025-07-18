@@ -4,7 +4,7 @@ import util
 
 class particlefilter:
     def __init__(self, count, start, posrange, angrange, 
-            polemeans, polevar, descmap, descxy, T_w_o=np.identity(4), d_max = 1.0):
+            polemeans, polevar, descmap, descxy, T_w_o=np.identity(4), d_max = 5.0):
         self.p_min = 0.01
         self.d_max = d_max
         self.minneff = 0.5
@@ -35,42 +35,40 @@ class particlefilter:
         self.particles = np.matmul(self.particles, T_r0_r1)
 
     def update_measurement(self, desc, poleparams, resample=True):
-        # matches = self.matcher(desc)
-        # M = poleparams.shape[0]
-        # polepos_r = np.hstack([poleparams[:, :2], np.zeros([M, 1]), np.ones([M, 1])]).T
-        # print(polepos_r)
-        # for pi in range(self.count):
-        #     w = 1.0
-        #     T = self.particles[pi] # 4×4
-        #     # print(T)
-        #     for i_local, j_global in matches:
-        #         # global pole 在 m→w→r 投影：descpos 是 w 座標下 xy
-        #         polepos_w = T.dot(polepos_r)
-        #         print(desc[i_local])
-        #         print(self.descmap[j_global])
-        #         print(polepos_w[i_local][:2])
-        #         print(self.descxy[j_global][:2])
-        #         d = np.linalg.norm(polepos_w[i_local][:2] - self.descxy[j_global][:2])
-        #         # print(d)
-        #         w *= (self.poledist.pdf(min(d, self.d_max)) + 0.2)
-        #     self.weights[pi] *= w
-        # self.weights /= np.sum(self.weights)
-        # if resample and self.neff < self.minneff:
-        #     self.resample()
-        
-        n = poleparams.shape[0]
-        polepos_r = np.hstack(
-            [poleparams[:, :2], np.zeros([n, 1]), np.ones([n, 1])]).T
-        for i in range(self.count):
-            polepos_w = self.particles[i].dot(polepos_r)
-            d, _ = self.kdtree.query(
-                polepos_w[:2].T, k=1, distance_upper_bound=self.d_max)
-            self.weights[i] *= np.prod(
-                self.poledist.pdf(np.clip(d, 0.0, self.d_max)) + 0.2)
+        matches = self.matcher(desc)
+        M = poleparams.shape[0]
+        polepos_r = np.hstack([poleparams[:, :2], np.zeros([M, 1]), np.ones([M, 1])]).T
+        for pi in range(self.count):
+            w = 1.0
+            T = self.particles[pi] # 4×4
+            for i_local, j_global in matches:
+                # global pole 在 m→w→r 投影：descpos 是 w 座標下 xy
+                polepos_w = T.dot(polepos_r)
+                # print(desc[i_local])
+                # print(self.descmap[j_global])
+                # print(f"pos_w: {polepos_w[:2, i_local]}")
+                # print(f"desc_xy: {self.descxy[j_global, :2]}")
+                d = np.linalg.norm(polepos_w[:2, i_local] - self.descxy[j_global][:2])
+                # print(d)
+                w *= (self.poledist.pdf(min(d, self.d_max)) + 0.2)
+            self.weights[pi] *= w
         self.weights /= np.sum(self.weights)
-
         if resample and self.neff < self.minneff:
             self.resample()
+        
+        # n = poleparams.shape[0]
+        # polepos_r = np.hstack(
+        #     [poleparams[:, :2], np.zeros([n, 1]), np.ones([n, 1])]).T
+        # for i in range(self.count):
+        #     polepos_w = self.particles[i].dot(polepos_r)
+        #     d, _ = self.kdtree.query(
+        #         polepos_w[:2].T, k=1, distance_upper_bound=self.d_max)
+        #     self.weights[i] *= np.prod(
+        #         self.poledist.pdf(np.clip(d, 0.0, self.d_max)) + 0.2)
+        # self.weights /= np.sum(self.weights)
+
+        # if resample and self.neff < self.minneff:
+        #     self.resample()
 
     def estimate_pose(self):
         if self.estimatetype == 'mean':

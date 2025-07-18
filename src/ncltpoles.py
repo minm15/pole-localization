@@ -297,7 +297,7 @@ def localize(sessionname, visualize=False, use_desc=False):
                         if len(ci) >= n_locdetections:
                             iactive |= set(ipoles) & ci
                     iactive = list(iactive)
-                    if iactive:
+                    if len(iactive) >= 5:
                         t_mid = session.t_velo[locdata[imap]['imid']]
                         T_w_r_mid = util.project_xy(session.get_T_w_r_odo(
                             t_mid).dot(T_r_mc)).dot(T_mc_r)
