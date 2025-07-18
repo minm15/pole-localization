@@ -1,2 +1,5 @@
 .env
 nclt
+.python-version
+reports/
+visualizations/

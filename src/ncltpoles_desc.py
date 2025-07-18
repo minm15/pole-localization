@@ -10,6 +10,7 @@ import particlefilter
 import pynclt
 import util
 import poles_extractor
+from report import SessionReport
 
 mapextent = np.array([30.0, 30.0, 5.0])
 mapsize = np.full(3, 0.2)
@@ -175,8 +176,7 @@ def plot_global_map(globalmapfile):
     plt.savefig(globalmapfile[:-4] + '.pgf')
     print(data['mapfactors'])
 
-
-def save_local_maps(sessionname, visualize=False, use_desc=False):
+def save_local_maps(sessionname, report, visualize=False, use_desc=False):
     print(sessionname)
     session = pynclt.session(sessionname)
     util.makedirs(session.dir)
@@ -219,6 +219,8 @@ def save_local_maps(sessionname, visualize=False, use_desc=False):
             bar.update(i)
             
     np.savez(os.path.join(session.dir, get_localmapfile()), maps=maps)
+    report.log_local_maps([m['poleparams'] for m in maps])
+
 
 def localize(sessionname, visualize=False, use_desc=False):
     print(sessionname)
@@ -297,7 +299,7 @@ def localize(sessionname, visualize=False, use_desc=False):
                         if len(ci) >= n_locdetections:
                             iactive |= set(ipoles) & ci
                     iactive = list(iactive)
-                    if iactive:
+                    if iactive and len(ipoles) >= 5:
                         t_mid = session.t_velo[locdata[imap]['imid']]
                         T_w_r_mid = util.project_xy(session.get_T_w_r_odo(
                             t_mid).dot(T_r_mc)).dot(T_mc_r)
@@ -326,105 +328,6 @@ def localize(sessionname, visualize=False, use_desc=False):
     filename = os.path.join(session.dir, get_locfileprefix() \
         + datetime.datetime.now().strftime('_%Y-%m-%d_%H-%M-%S.npz'))
     np.savez(filename, T_w_r_est=T_w_r_est)
-
-# def localize(sessionname, visualize=False):
-#     print(sessionname)
-#     mapdata = np.load(os.path.join('nclt', get_globalmapname() + '.npz'))
-#     polemap = mapdata['polemeans'][:, :2]
-#     polevar = 1.50
-#     session = pynclt.session(sessionname)
-#     locdata = np.load(os.path.join(session.dir, get_localmapfile()), allow_pickle=True)['maps']
-#     polepos_m = []
-#     polepos_w = []
-#     for i in range(len(locdata)):
-#         n = locdata[i]['poleparams'].shape[0]
-#         pad = np.hstack([np.zeros([n, 1]), np.ones([n, 1])])
-#         polepos_m.append(np.hstack([locdata[i]['poleparams'][:, :2], pad]).T)
-#         polepos_w.append(locdata[i]['T_w_m'].dot(polepos_m[i]))
-#     istart = 0
-    
-#     T_w_r_start = util.project_xy(
-#         session.get_T_w_r_gt(session.t_relodo[istart]).dot(T_r_mc)).dot(T_mc_r)
-    
-#     filter = particlefilter.particlefilter(500, 
-#         T_w_r_start, 2.5, np.radians(5.0), polemap, polevar, T_w_o=T_mc_r)
-#     filter.estimatetype = 'best'
-#     filter.minneff = 0.5
-
-#     if visualize:
-#         plt.ion()
-#         figure = plt.figure()
-#         nplots = 1
-#         mapaxes = figure.add_subplot(nplots, 1, 1)
-#         mapaxes.set_aspect('equal')
-#         mapaxes.scatter(polemap[:, 0], polemap[:, 1], s=5, c='b', marker='s')
-#         x_gt, y_gt = session.T_w_r_gt[::20, :2, 3].T
-#         mapaxes.plot(x_gt, y_gt, 'g')
-#         particles = mapaxes.scatter([], [], s=1, c='r')
-#         arrow = mapaxes.arrow(0.0, 0.0, 1.0, 0.0, length_includes_head=True, 
-#             head_width=0.7, head_length=1.0, color='k')
-#         arrowdata = np.hstack(
-#             [arrow.get_xy(), np.zeros([8, 1]), np.ones([8, 1])]).T
-#         locpoles = mapaxes.scatter([], [], s=30, c='k', marker='x')
-#         viewoffset = 25.0
-
-#     imap = 0
-#     while imap < locdata.shape[0] - 1 and \
-#             session.t_velo[locdata[imap]['iend']] < session.t_relodo[istart]:
-#         imap += 1
-#     T_w_r_est = np.full([session.t_relodo.size, 4, 4], np.nan)
-#     with progressbar.ProgressBar(max_value=session.t_relodo.size) as bar:
-#         for i in range(istart, session.t_relodo.size):
-#             relodocov = np.empty([3, 3])
-#             relodocov[:2, :2] = session.relodocov[i, :2, :2]
-#             relodocov[:, 2] = session.relodocov[i, [0, 1, 5], 5]
-#             relodocov[2, :] = session.relodocov[i, 5, [0, 1, 5]]
-#             filter.update_motion(session.relodo[i], relodocov * 2.0**2)
-#             T_w_r_est[i] = filter.estimate_pose()
-#             t_now = session.t_relodo[i]
-#             if imap < locdata.shape[0]:
-#                 t_end = session.t_velo[locdata[imap]['iend']]
-#                 if t_now >= t_end:
-#                     imaps = range(imap, np.clip(imap-n_localmaps, -1, None), -1)
-#                     xy = np.hstack([polepos_w[j][:2] for j in imaps]).T
-#                     a = np.vstack([ld['poleparams'][:, [2]] \
-#                         for ld in locdata[imaps]])
-#                     boxes = np.hstack([xy - a, xy + a])
-#                     ipoles = set(range(polepos_w[imap].shape[1]))
-#                     iactive = set()
-#                     for ci in cluster.cluster_boxes(boxes):
-#                         if len(ci) >= n_locdetections:
-#                             iactive |= set(ipoles) & ci
-#                     iactive = list(iactive)
-#                     if iactive:
-#                         t_mid = session.t_velo[locdata[imap]['imid']]
-#                         T_w_r_mid = util.project_xy(session.get_T_w_r_odo(
-#                             t_mid).dot(T_r_mc)).dot(T_mc_r)
-#                         T_w_r_now = util.project_xy(session.get_T_w_r_odo(
-#                             t_now).dot(T_r_mc)).dot(T_mc_r)
-#                         T_r_now_r_mid = util.invert_ht(T_w_r_now).dot(T_w_r_mid)
-#                         polepos_r_now = T_r_now_r_mid.dot(T_r_m).dot(
-#                             polepos_m[imap][:, iactive])
-#                         filter.update_measurement(polepos_r_now[:2].T)
-#                         T_w_r_est[i] = filter.estimate_pose()
-#                         if visualize:
-#                             polepos_w_est = T_w_r_est[i].dot(polepos_r_now)
-#                             locpoles.set_offsets(polepos_w_est[:2].T)
-
-#                     imap += 1
-            
-#             if visualize:
-#                 particles.set_offsets(filter.particles[:, :2, 3])
-#                 arrow.set_xy(T_w_r_est[i].dot(arrowdata)[:2].T)
-#                 x, y = T_w_r_est[i, :2, 3]
-#                 mapaxes.set_xlim(left=x - viewoffset, right=x + viewoffset)
-#                 mapaxes.set_ylim(bottom=y - viewoffset, top=y + viewoffset)
-#                 figure.canvas.draw_idle()
-#                 figure.canvas.flush_events()
-#             bar.update(i)
-#     filename = os.path.join(session.dir, get_locfileprefix() \
-#         + datetime.datetime.now().strftime('_%Y-%m-%d_%H-%M-%S.npz'))
-#     np.savez(filename, T_w_r_est=T_w_r_est)
 
 
 def plot_trajectories():
@@ -526,10 +429,11 @@ def evaluate():
 
 
 if __name__ == '__main__':
-    # save_global_map(use_desc=True)
+    save_global_map(use_desc=True)
     for session in pynclt.sessions:
-        # save_local_maps(session, use_desc=True)
-        localize(session, visualize=False, use_desc=False)
+        report = SessionReport(session, root_dir='./reports')
+        save_local_maps(session, report, use_desc=True)
+        localize(session, visualize=True)
 
     plot_trajectories()
     evaluate()
