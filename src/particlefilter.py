@@ -4,7 +4,7 @@ import util
 
 class particlefilter:
     def __init__(self, count, start, posrange, angrange, 
-            polemeans, polevar, descmap, descxy, T_w_o=np.identity(4), d_max = 5.0):
+            polemeans, polevar, descmap, descxy, descmap_index, edges, T_w_o=np.identity(4), d_max = 5.0):
         self.p_min = 0.01
         self.d_max = d_max
         self.minneff = 0.5
@@ -20,6 +20,8 @@ class particlefilter:
         self.polemeans = polemeans
         self.descmap = descmap
         self.descxy = descxy
+        self.descmap_index = descmap_index
+        self.edges = edges
         self.poledist = scipy.stats.norm(loc=0.0, scale=np.sqrt(polevar))
         self.kdtree = scipy.spatial.cKDTree(polemeans[:, :2], leafsize=3)
         self.T_w_o = T_w_o
@@ -38,37 +40,33 @@ class particlefilter:
         matches = self.matcher(desc)
         M = poleparams.shape[0]
         polepos_r = np.hstack([poleparams[:, :2], np.zeros([M, 1]), np.ones([M, 1])]).T
-        for pi in range(self.count):
-            w = 1.0
-            T = self.particles[pi] # 4×4
-            for i_local, j_global in matches:
-                # global pole 在 m→w→r 投影：descpos 是 w 座標下 xy
-                polepos_w = T.dot(polepos_r)
-                # print(desc[i_local])
-                # print(self.descmap[j_global])
-                # print(f"pos_w: {polepos_w[:2, i_local]}")
-                # print(f"desc_xy: {self.descxy[j_global, :2]}")
-                d = np.linalg.norm(polepos_w[:2, i_local] - self.descxy[j_global][:2])
-                # print(d)
-                w *= (self.poledist.pdf(min(d, self.d_max)) + 0.2)
-            self.weights[pi] *= w
+        
+        # update weight according to the matching result
+        local_idx  = np.array([i for i, _ in matches], dtype=int)       # shape (M,)
+        global_idx = np.array([j for _, j in matches], dtype=int)       # shape (M,)
+
+        # construct the subset of polepos_r, only keep the matched pole
+        polepos_r_sub = polepos_r[:, local_idx]                         # shape (4, M)
+
+        # construct the subset of global descxy
+        desc_sub = self.descxy[global_idx, :2]                           # shape (M, 2)
+
+        # for each particle, perform matrix operation once, (count, 4, M)
+        # represents the pole (4, M) for each particle (count)
+        polepos_w_all = np.einsum('pij,jk->pik', self.particles, polepos_r_sub)
+
+        # calclate the distance: (count, M)
+        diffs = polepos_w_all[:, :2, :] - desc_sub.T[None, :, :]         # broadcast → (count, 2, M)
+        dists = np.linalg.norm(diffs, axis=1)                            # (count, M)
+        dists = np.minimum(dists, self.d_max)                            
+
+        weights_factor = np.prod(self.poledist.pdf(dists) + 0.2, axis=1) # shape (count,)
+
+        self.weights *= weights_factor
+        
         self.weights /= np.sum(self.weights)
         if resample and self.neff < self.minneff:
             self.resample()
-        
-        # n = poleparams.shape[0]
-        # polepos_r = np.hstack(
-        #     [poleparams[:, :2], np.zeros([n, 1]), np.ones([n, 1])]).T
-        # for i in range(self.count):
-        #     polepos_w = self.particles[i].dot(polepos_r)
-        #     d, _ = self.kdtree.query(
-        #         polepos_w[:2].T, k=1, distance_upper_bound=self.d_max)
-        #     self.weights[i] *= np.prod(
-        #         self.poledist.pdf(np.clip(d, 0.0, self.d_max)) + 0.2)
-        # self.weights /= np.sum(self.weights)
-
-        # if resample and self.neff < self.minneff:
-        #     self.resample()
 
     def estimate_pose(self):
         if self.estimatetype == 'mean':
@@ -99,7 +97,7 @@ class particlefilter:
             pos += 1.0 / self.count
         self.particles = self.particles[idx]
         self.weights[:] = 1.0 / self.count
-        
+    
     def matcher(self, local_descs):
         """
         For each local descriptor row d1, find the index j of the global descriptor d2
@@ -111,10 +109,14 @@ class particlefilter:
         nz_global = self.descmap != 0
 
         for i, d1 in enumerate(local_descs):
+            bin_idx = np.searchsorted(self.edges, d1[0], side='right') - 1
+            bin_idx = max(0, min(bin_idx, 15))
+
             best_j, best_score = -1, -1
             mask1 = nz_local[i]
-            # compare against every global descriptor
-            for j, d2 in enumerate(self.descmap):
+
+            for j in self.descmap_index[bin_idx]:
+                d2 = self.descmap[j]
                 common = mask1 & nz_global[j]
                 if not np.any(common):
                     score = 0
@@ -123,5 +125,6 @@ class particlefilter:
                     score = int((diffs <= 0.2).sum())
                 if score > best_score:
                     best_score, best_j = score, j
+
             matches.append((i, best_j))
         return matches

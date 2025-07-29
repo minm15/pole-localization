@@ -28,7 +28,7 @@ def detect_poles_learning(xyz, model, device, cut_z=True, neighbourthr=0.5, min_
     pole_out = argmax[0]
     pole_out = pole_out.cpu().detach().numpy()
 
-    open_set = gen_open_set(pole_out, height, width, invalid=0)
+    open_set = gen_open_set(pole_out, height, width)
     open_set = np.array(open_set)
 
     if open_set.shape[0] == 0:
@@ -99,7 +99,7 @@ def detect_poles_learning(xyz, model, device, cut_z=True, neighbourthr=0.5, min_
         return poleparams
 
 
-def detect_poles(xyz, neighbourthr = 0.5, min_point_num = 2, dis_thr = 0.08, width_thr = 20, fov_up=30.67, fov_down=-10.67, proj_H = 32, proj_W = 250, lowest=0.1, highest=6, lowthr = 1.2, highthr = 0.5, totalthr = 0.4, vis=False, desc=False):
+def detect_poles(xyz, neighbourthr = 0.5, min_point_num = 3, dis_thr = 0.08, width_thr = 10, fov_up=30.67, fov_down=-10.67, proj_H = 32, proj_W = 250, lowest=0.1, highest=6, lowthr = 1.5, highthr = 0.7, totalthr = 0.6, vis=False, desc=False):
     range_data, proj_vertex, _ = range_projection(xyz,
                                                 fov_up=fov_up,
                                                 fov_down=fov_down,
@@ -428,10 +428,9 @@ def compute_link3d_descriptor(keypoints):
     N = keypoints.shape[0]
     D = 110
     descriptors = np.zeros((N, D), dtype=np.float32)
-    if N < 5:
+    if N < 4:
         return descriptors
 
-    # 1. 预计算两两距离和方向
     disTab = np.zeros((N, N), dtype=np.float32)
     dirTab = np.zeros((N, N, 2), dtype=np.float32)
     for i in range(N):
@@ -445,30 +444,20 @@ def compute_link3d_descriptor(keypoints):
             dirTab[i, j] = [dx, dy]
             dirTab[j, i] = [-dx, -dy]
 
-    # 2. 对每个点，找出 3 个最近邻，并填充扇区
     for i in range(N):
-        # print(f"[DEBUG] Processing point i={i}, coords=({keypoints[i,0]:.2f},{keypoints[i,1]:.2f})")
-
-        # 找 3 个最近邻 (升序)
         row = disTab[i].copy()
         row[i] = np.inf
         nbrs = np.argsort(row)[:3]        # [n0, n1, n2]
         nbrs_dists = row[nbrs]
-        # print(f"        Neighbors indices: {nbrs.tolist()}")
-        # print(f"        Neighbors distances: {[f'{d:.3f}' for d in nbrs_dists]}")
 
-        # 2a. 先清理扇区 1…D-1，只由最远邻居到最近邻居依次填空
-        for idx in nbrs[::-1]:            # 反序：先 n2，再 n1，最后 n0
+        for idx in nbrs[::-1]:        
             mainDirect = dirTab[i, idx]
             mag_main = np.linalg.norm(mainDirect)
             if mag_main == 0:
                 continue
 
-            # 扇区列表，只用于 1 … D-1
             areaDis = [[] for _ in range(D)]
-            # 扇区 0 留到最后统一处理
 
-            # 对其它点按角度分区
             for j in range(N):
                 if j == i or j == idx:
                     continue
@@ -491,16 +480,10 @@ def compute_link3d_descriptor(keypoints):
                 if 1 <= sector < D:    # **只填 1…D-1**
                     areaDis[sector].append(disTab[i, j])
 
-            # 填空：只把 areaDis[s] 放到 descriptors[i,s]==0 的位置
             for s in range(1, D):
                 if areaDis[s] and descriptors[i, s] == 0:
                     descriptors[i, s] = min(areaDis[s])
 
-        # 2b. 最后一次性把扇区 0 设为这三个邻居距离的最小值
         descriptors[i, 0] = float(np.min(nbrs_dists))
-
-        # debug: 打印前 10 维查看
-        # print(f"        Descriptor[0..9]: {descriptors[i].tolist()}")
-        # print("        ...\n")
 
     return descriptors

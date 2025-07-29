@@ -16,7 +16,7 @@ mapsize = np.full(3, 0.2)
 mapshape = np.array(mapextent / mapsize, dtype=np.int)
 mapinterval = 0.25
 mapdistance = 0.25
-remapdistance = 10.0
+remapdistance = 5.0
 n_mapdetections = 6
 n_locdetections = 2
 n_localmaps = 6
@@ -101,6 +101,7 @@ def save_global_map(use_desc=False):
                 if use_desc:
                     localpoleparam, desc = poles_extractor.detect_poles(
                         xyz, desc=True)
+                    # if len(desc) < 4: continue 
                     all_descs.append(desc)
                 else:
                     localpoleparam = poles_extractor.detect_poles(xyz)
@@ -119,7 +120,7 @@ def save_global_map(use_desc=False):
     a = poleparams[:, [2]]
     boxes = np.hstack([xy - a, xy + a])
     clustermeans = np.empty([0, 3])
-    cluster_descs = np.empty((0,110))
+    clusterdescs = np.empty((0,110))
     descs_array = np.vstack(all_descs)
     print(poleparams.shape, descs_array.shape)
     
@@ -131,14 +132,31 @@ def save_global_map(use_desc=False):
             ci = list(ci)
             if len(ci) < n_mapdetections:
                 continue
-            clustermeans = np.vstack([clustermeans, np.average(poleparams[ci, :], axis=0)])
-            cluster_descs = np.vstack([cluster_descs, np.mean(descs_array[ci, :], axis=0)])
+            
+            # build my mean pole and descriptor
+            local_poleparams = poleparams[ci, :]      # (Nc, 3)
+            local_descs = descs_array[ci, :]
+            
+            cluster_means, cluster_descs = merge_cluster_descriptors(
+                local_poleparams,
+                local_descs,
+                threshold=0.2
+            )
+            clustermeans = np.vstack([clustermeans, cluster_means])
+            clusterdescs = np.vstack([clusterdescs, cluster_descs])
+            
+            # clustermeans = np.vstack([clustermeans, np.average(poleparams[ci, :], axis=0)])
+            # cluster_descs = np.vstack([cluster_descs, np.mean(descs_array[ci, :], axis=0)])
             
             f_desc.write(f"c{cid}\n")
-            for pole_idx in ci:
-                vec = descs_array[pole_idx]        # shape (180,)
+            for i in range(len(cluster_descs)):
+                vec = cluster_descs[i]
                 line = " ".join(f"{v:.2f}" for v in vec)
                 f_desc.write(line + "\n")
+            # for pole_idx in ci:
+            #     vec = descs_array[pole_idx]        # shape (180,)
+            #     line = " ".join(f"{v:.2f}" for v in vec)
+            #     f_desc.write(line + "\n")
             cid += 1
         
     globalmapfile = os.path.join('nclt', get_globalmapname() + '.npz')
@@ -148,6 +166,7 @@ def save_global_map(use_desc=False):
         all_descs = np.vstack(all_descs)
         np.savez(globalmapfile,
                  polemeans=clustermeans,
+                 descmeans=clusterdescs,
                  mapfactors=mapfactors,
                  mappos=globalmappos,
                  allpole=poleparams,
@@ -155,6 +174,7 @@ def save_global_map(use_desc=False):
         
         # np.savez(allglobalmapfile, polemeans=xy, descriptors=descs_array)
         print(f"allpole.shape: {poleparams.shape}, descriptors.shape: {descs_array.shape}")
+        print(f"polemeans.shape: {clustermeans.shape}, descmeans.shape: {clusterdescs.shape}")
         
     else:
         np.savez(globalmapfile,
@@ -226,8 +246,11 @@ def localize(sessionname, visualize=False, use_desc=False):
     # load the global map data
     mapdata = np.load(os.path.join('nclt', get_globalmapname() + '.npz'))
     polemap = mapdata['polemeans'][:, :2]
-    descmap = mapdata['descriptors']
-    descxy = mapdata['allpole'][:, :2]
+    descmap = mapdata['descmeans']
+    descxy = mapdata['polemeans'][:, :2]
+    # descmap = mapdata['descriptors']
+    # descxy = mapdata['allpole'][:, :2]
+    print(f"descmap size: {descmap.shape}, descxy size: {descxy.shape}")
     polevar = 1.50
     
     # load the local map data
@@ -247,8 +270,11 @@ def localize(sessionname, visualize=False, use_desc=False):
     T_w_r_start = util.project_xy(
         session.get_T_w_r_gt(session.t_relodo[istart]).dot(T_r_mc)).dot(T_mc_r)
     
-    filter = particlefilter.particlefilter(500, 
-        T_w_r_start, 2.5, np.radians(5.0), polemap, polevar, descmap, descxy, T_w_o=T_mc_r)
+    # construct the descmap index
+    descmap_index, edges = build_descmap_index(descmap, 16)
+    
+    filter = particlefilter.particlefilter(5000, 
+        T_w_r_start, 2.5, np.radians(5.0), polemap, polevar, descmap, descxy, descmap_index, edges, T_w_o=T_mc_r)
     filter.estimatetype = 'best'
     filter.minneff = 0.5
 
@@ -297,7 +323,7 @@ def localize(sessionname, visualize=False, use_desc=False):
                         if len(ci) >= n_locdetections:
                             iactive |= set(ipoles) & ci
                     iactive = list(iactive)
-                    if len(iactive) >= 5:
+                    if len(iactive) >= 4:
                         t_mid = session.t_velo[locdata[imap]['imid']]
                         T_w_r_mid = util.project_xy(session.get_T_w_r_odo(
                             t_mid).dot(T_r_mc)).dot(T_mc_r)
@@ -326,106 +352,6 @@ def localize(sessionname, visualize=False, use_desc=False):
     filename = os.path.join(session.dir, get_locfileprefix() \
         + datetime.datetime.now().strftime('_%Y-%m-%d_%H-%M-%S.npz'))
     np.savez(filename, T_w_r_est=T_w_r_est)
-
-# def localize(sessionname, visualize=False):
-#     print(sessionname)
-#     mapdata = np.load(os.path.join('nclt', get_globalmapname() + '.npz'))
-#     polemap = mapdata['polemeans'][:, :2]
-#     polevar = 1.50
-#     session = pynclt.session(sessionname)
-#     locdata = np.load(os.path.join(session.dir, get_localmapfile()), allow_pickle=True)['maps']
-#     polepos_m = []
-#     polepos_w = []
-#     for i in range(len(locdata)):
-#         n = locdata[i]['poleparams'].shape[0]
-#         pad = np.hstack([np.zeros([n, 1]), np.ones([n, 1])])
-#         polepos_m.append(np.hstack([locdata[i]['poleparams'][:, :2], pad]).T)
-#         polepos_w.append(locdata[i]['T_w_m'].dot(polepos_m[i]))
-#     istart = 0
-    
-#     T_w_r_start = util.project_xy(
-#         session.get_T_w_r_gt(session.t_relodo[istart]).dot(T_r_mc)).dot(T_mc_r)
-    
-#     filter = particlefilter.particlefilter(500, 
-#         T_w_r_start, 2.5, np.radians(5.0), polemap, polevar, T_w_o=T_mc_r)
-#     filter.estimatetype = 'best'
-#     filter.minneff = 0.5
-
-#     if visualize:
-#         plt.ion()
-#         figure = plt.figure()
-#         nplots = 1
-#         mapaxes = figure.add_subplot(nplots, 1, 1)
-#         mapaxes.set_aspect('equal')
-#         mapaxes.scatter(polemap[:, 0], polemap[:, 1], s=5, c='b', marker='s')
-#         x_gt, y_gt = session.T_w_r_gt[::20, :2, 3].T
-#         mapaxes.plot(x_gt, y_gt, 'g')
-#         particles = mapaxes.scatter([], [], s=1, c='r')
-#         arrow = mapaxes.arrow(0.0, 0.0, 1.0, 0.0, length_includes_head=True, 
-#             head_width=0.7, head_length=1.0, color='k')
-#         arrowdata = np.hstack(
-#             [arrow.get_xy(), np.zeros([8, 1]), np.ones([8, 1])]).T
-#         locpoles = mapaxes.scatter([], [], s=30, c='k', marker='x')
-#         viewoffset = 25.0
-
-#     imap = 0
-#     while imap < locdata.shape[0] - 1 and \
-#             session.t_velo[locdata[imap]['iend']] < session.t_relodo[istart]:
-#         imap += 1
-#     T_w_r_est = np.full([session.t_relodo.size, 4, 4], np.nan)
-#     with progressbar.ProgressBar(max_value=session.t_relodo.size) as bar:
-#         for i in range(istart, session.t_relodo.size):
-#             relodocov = np.empty([3, 3])
-#             relodocov[:2, :2] = session.relodocov[i, :2, :2]
-#             relodocov[:, 2] = session.relodocov[i, [0, 1, 5], 5]
-#             relodocov[2, :] = session.relodocov[i, 5, [0, 1, 5]]
-#             filter.update_motion(session.relodo[i], relodocov * 2.0**2)
-#             T_w_r_est[i] = filter.estimate_pose()
-#             t_now = session.t_relodo[i]
-#             if imap < locdata.shape[0]:
-#                 t_end = session.t_velo[locdata[imap]['iend']]
-#                 if t_now >= t_end:
-#                     imaps = range(imap, np.clip(imap-n_localmaps, -1, None), -1)
-#                     xy = np.hstack([polepos_w[j][:2] for j in imaps]).T
-#                     a = np.vstack([ld['poleparams'][:, [2]] \
-#                         for ld in locdata[imaps]])
-#                     boxes = np.hstack([xy - a, xy + a])
-#                     ipoles = set(range(polepos_w[imap].shape[1]))
-#                     iactive = set()
-#                     for ci in cluster.cluster_boxes(boxes):
-#                         if len(ci) >= n_locdetections:
-#                             iactive |= set(ipoles) & ci
-#                     iactive = list(iactive)
-#                     if iactive:
-#                         t_mid = session.t_velo[locdata[imap]['imid']]
-#                         T_w_r_mid = util.project_xy(session.get_T_w_r_odo(
-#                             t_mid).dot(T_r_mc)).dot(T_mc_r)
-#                         T_w_r_now = util.project_xy(session.get_T_w_r_odo(
-#                             t_now).dot(T_r_mc)).dot(T_mc_r)
-#                         T_r_now_r_mid = util.invert_ht(T_w_r_now).dot(T_w_r_mid)
-#                         polepos_r_now = T_r_now_r_mid.dot(T_r_m).dot(
-#                             polepos_m[imap][:, iactive])
-#                         filter.update_measurement(polepos_r_now[:2].T)
-#                         T_w_r_est[i] = filter.estimate_pose()
-#                         if visualize:
-#                             polepos_w_est = T_w_r_est[i].dot(polepos_r_now)
-#                             locpoles.set_offsets(polepos_w_est[:2].T)
-
-#                     imap += 1
-            
-#             if visualize:
-#                 particles.set_offsets(filter.particles[:, :2, 3])
-#                 arrow.set_xy(T_w_r_est[i].dot(arrowdata)[:2].T)
-#                 x, y = T_w_r_est[i, :2, 3]
-#                 mapaxes.set_xlim(left=x - viewoffset, right=x + viewoffset)
-#                 mapaxes.set_ylim(bottom=y - viewoffset, top=y + viewoffset)
-#                 figure.canvas.draw_idle()
-#                 figure.canvas.flush_events()
-#             bar.update(i)
-#     filename = os.path.join(session.dir, get_locfileprefix() \
-#         + datetime.datetime.now().strftime('_%Y-%m-%d_%H-%M-%S.npz'))
-#     np.savez(filename, T_w_r_est=T_w_r_est)
-
 
 def plot_trajectories():
     trajectorydir = os.path.join(
@@ -523,13 +449,146 @@ def evaluate():
             posrmse=stat['posrmse'],
             angerror=stat['angerror'],
             angrmse=stat['angrmse']))
+        
+def merge_cluster_descriptors(poleparams, descs_array, threshold=0.2):
+    """
+    input:
+      poleparams:  np.ndarray of shape (N, 3)
+      descs_array: np.ndarray of shape (N, D)
+      threshold:   float, 
+    output:
+      cluster_means: list of np.ndarray (shape (3,))  M x 3
+      cluster_descs: list of np.ndarray (shape (D,))  M x D
+    """
+    N, D = descs_array.shape
+
+    # mask zero-only descriptors
+    zero_mask = np.all(descs_array == 0, axis=1)
+    zero_idxs = np.where(zero_mask)[0].tolist()
+    nonzero_idxs = np.where(~zero_mask)[0].tolist()
+
+    # sort by dim-0
+    nonzero_idxs.sort(key=lambda i: descs_array[i, 0])
+
+    clusters = []
+    cluster_means = [] 
+    cluster_mins  = []
+    cluster_maxs  = []
+
+    # cluster by order
+    for idx in nonzero_idxs:
+        desc_new = descs_array[idx]
+        if not clusters:
+            # the first cluster
+            clusters.append([idx])
+            cluster_means.append(desc_new.copy())
+            cluster_mins.append(desc_new.copy())
+            cluster_maxs.append(desc_new.copy())
+        else:
+            last = len(clusters) - 1
+            mean = cluster_means[last]
+            mins = cluster_mins[last]
+            maxs = cluster_maxs[last]
+            M = len(clusters[last])
+
+            # try to combine
+            can_merge = True
+            for d in range(D):
+                v0 = mean[d]
+                v1 = desc_new[d]
+                if v0 != 0 and v1 != 0:
+                    new_mean = (v0 * M + v1) / (M + 1)
+                    new_min  = min(mins[d],    v1)
+                    new_max  = max(maxs[d],    v1)
+                    if abs(new_mean - new_min) > threshold or \
+                       abs(new_max - new_mean) > threshold:
+                        can_merge = False
+                        break
+
+            if can_merge:
+                # update the stat of new combined cluster
+                clusters[last].append(idx)
+                for d in range(D):
+                    v0 = mean[d]
+                    v1 = desc_new[d]
+                    if v0 == 0 and v1 != 0:
+                        mean[d] = v1
+                    elif v0 != 0 and v1 != 0:
+                        mean[d] = (v0 * M + v1) / (M + 1)
+                        
+                    if v1 != 0:
+                        mins[d] = min(mins[d], v1)
+                        maxs[d] = max(maxs[d], v1)
+                
+                cluster_means[last] = mean
+                cluster_mins[last]  = mins
+                cluster_maxs[last]  = maxs
+            else:
+                # create a new cluster
+                clusters.append([idx])
+                cluster_means.append(desc_new.copy())
+                cluster_mins.append(desc_new.copy())
+                cluster_maxs.append(desc_new.copy())
+
+    # calculate the final cluster means and descs
+    final_pole_means = []
+    final_desc_means = []
+    for k, idxs in enumerate(clusters):
+        # pole means: include the pole for zero-only desc
+        all_idxs = idxs + zero_idxs
+        pm = np.mean(poleparams[all_idxs, :], axis=0)
+        final_pole_means.append(pm)
+        # desc means: cluster_means[k]
+        final_desc_means.append(cluster_means[k].copy())
+
+    # output np.ndarray
+    if len(final_pole_means) == 0:
+        return np.zeros((0, 3)), np.zeros((0, D))
+    
+    clustermeans  = np.vstack(final_pole_means)   # shape (M, 3)
+    cluster_descs = np.vstack(final_desc_means)   # shape (M, D)
+    return clustermeans, cluster_descs
+
+def build_descmap_index(descmap, k):
+    """
+    divide descmap[:,0] to k parts, return:
+      - descmap_index: dict[int, List[int]], bucket number -> global descriptor index list
+      - edges: np.ndarray of shape (k+1,), edge number for dividing bucket
+
+    Usage:
+      descmap_index, edges = build_descmap_index(descmap, k=16)
+    """
+    dim0 = descmap[:, 0]
+    edges = np.quantile(dim0, np.linspace(0, 1, k+1))
+    
+    descmap_index = {i: [] for i in range(k)}
+    
+    for j, v in enumerate(dim0):
+        bin_idx = np.searchsorted(edges, v, side='right') - 1
+        bin_idx = max(0, min(bin_idx, k-1))
+        descmap_index[bin_idx].append(j)
+    
+    return descmap_index, edges
 
 
 if __name__ == '__main__':
-    # save_global_map(use_desc=True)
+    #save_global_map(use_desc=True)
     for session in pynclt.sessions:
-        # save_local_maps(session, use_desc=True)
+        #save_local_maps(session, use_desc=True)
         localize(session, visualize=False, use_desc=False)
 
     plot_trajectories()
     evaluate()
+    
+    
+# for session in sessions:
+#     for all mappos do clustermeans, clusterdescs calculation
+#     if this is the first session:
+#         add all of the clusterdescs and clustermeans into the global map
+#     else:
+#         for each desc in cluster descs:
+#             do_match(desc, globaldescs)
+#             if the matched pair <i, j> satisfy distance(clustermeans[i], globalpolexy[j]) < 1.0:
+#                 continue
+#             else:
+#                 add the desc and corresponding pole clustermean into the global map
