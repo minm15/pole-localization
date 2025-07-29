@@ -271,9 +271,9 @@ def localize(sessionname, visualize=False, use_desc=False):
         session.get_T_w_r_gt(session.t_relodo[istart]).dot(T_r_mc)).dot(T_mc_r)
     
     # construct the descmap index
-    descmap_index, edges = build_descmap_index(descmap, 16)
+    descmap_index, edges = build_descmap_index(descmap, 32)
     
-    filter = particlefilter.particlefilter(5000, 
+    filter = particlefilter.particlefilter(500, 
         T_w_r_start, 2.5, np.radians(5.0), polemap, polevar, descmap, descxy, descmap_index, edges, T_w_o=T_mc_r)
     filter.estimatetype = 'best'
     filter.minneff = 0.5
@@ -436,6 +436,20 @@ def evaluate():
         stats.append({'session': sessionname, 'lonerror': lonerror, 
             'laterror': laterror, 'poserror': poserror, 'posrmse': posrmse,
             'angerror': angerror, 'angrmse': angrmse, 'T_gt_est': T_gt_est})
+        
+        # save figure
+        pos_errors_time = np.linalg.norm(T_gt_est[..., :2, 3], axis=-1)
+        mean_pos_errors = pos_errors_time.mean(axis=0)
+        plt.figure()
+        plt.plot(t_eval, mean_pos_errors, linewidth=2)
+        plt.xlabel('Time [s]')
+        plt.ylabel('Mean Position Error [m]')
+        plt.title(f'Session {sessionname} Position Error')
+        outdir = os.path.join(pynclt.resultdir, sessionname)
+        img_path = os.path.join(outdir, 'poserror_over_time.png')
+        plt.savefig(img_path, dpi=150)
+        plt.close()
+        
     np.savez(os.path.join(pynclt.resultdir, get_evalfile()), stats=stats)
     
     mapdata = np.load(os.path.join('nclt', get_globalmapname() + '.npz'))
