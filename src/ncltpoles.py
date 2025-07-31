@@ -586,9 +586,9 @@ def build_descmap_index(descmap, k):
 
 
 if __name__ == '__main__':
-    #save_global_map(use_desc=True)
+    save_global_map(use_desc=True)
     for session in pynclt.sessions:
-        #save_local_maps(session, use_desc=True)
+        save_local_maps(session, use_desc=True)
         localize(session, visualize=False, use_desc=False)
 
     plot_trajectories()
